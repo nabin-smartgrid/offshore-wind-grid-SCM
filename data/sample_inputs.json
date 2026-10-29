@@ -1,0 +1,16 @@
+{
+  "project": "서남해 가상 해상풍력 500 MW",
+  "capacity_mw": 500.0,
+  "operating_mw": 500.0,
+  "length_km": 65.0,
+  "voltage_kv": 154.0,
+  "connection": "HVAC",
+  "short_circuit_mva": 1400.0,
+  "cod": "2033-12",
+  "capacitance_uf_km": 0.2,
+  "resistance_ohm_km": 0.03,
+  "frequency_hz": 60.0,
+  "power_factor": 1.0,
+  "circuits": 2,
+  "demo_rules": true
+}
