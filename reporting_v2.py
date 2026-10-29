@@ -1,107 +1,172 @@
-"""Readable Korean PDF reports; font is provided by server, never bundled."""
+"""WindGrid SCM v0.3: Korean embedded-font, structured scenario reports.
+
+ReportLab uses a TrueType font included in the runtime dependency
+`koreanize-matplotlib`; no font files are stored in this repository.
+If no Korean TrueType font is available, fail clearly instead of creating a broken PDF.
+"""
 from __future__ import annotations
-import io,os
+import io, os
 from pathlib import Path
 from html import escape
-from dataclasses import asdict
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate,Paragraph,Table,TableStyle,Spacer,Flowable
+from reportlab.platypus import (SimpleDocTemplate, Paragraph, Table, TableStyle,
+                                Spacer, Flowable, PageBreak, KeepTogether)
 from core import Inputs, Results, screening, overall, template_summary
-from scenarios import scm_review,scenario_takeaways
+from scenarios import scm_review, scenario_takeaways, scenario_procurement_changes
 
-NAVY=colors.HexColor('#153450');BLUE=colors.HexColor('#1767A5');PALE=colors.HexColor('#EAF2F9')
+NAVY=colors.HexColor('#143451')
+BLUE=colors.HexColor('#156EA4')
+PALE=colors.HexColor('#EAF2F8')
+GRAY=colors.HexColor('#62788B')
+BORDER=colors.HexColor('#D8E4EC')
+
 
 def _font():
-    for file in [os.getenv('KOREAN_FONT_PATH',''),r'C:\Windows\Fonts\malgun.ttf','/usr/share/fonts/truetype/nanum/NanumGothic.ttf']:
-        if file and Path(file).is_file():
+    if 'WGKorean' in pdfmetrics.getRegisteredFontNames():
+        return 'WGKorean'
+    candidates = [os.getenv('KOREAN_FONT_PATH',''),
+                  '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+                  '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
+                  r'C:\Windows\Fonts\malgun.ttf']
+    # koreanize-matplotlib supplies NanumGothic on pip-managed cloud environments.
+    try:
+        import koreanize_matplotlib
+        root=Path(koreanize_matplotlib.__file__).resolve().parent
+        candidates.extend(str(p) for p in root.rglob('*.ttf') if 'nanum' in p.name.lower())
+    except ImportError:
+        pass
+    for path in candidates:
+        if path and Path(path).is_file():
             try:
-                if 'WGKorean' not in pdfmetrics.getRegisteredFontNames():pdfmetrics.registerFont(TTFont('WGKorean',file))
+                pdfmetrics.registerFont(TTFont('WGKorean',str(path)))
                 return 'WGKorean'
-            except Exception:pass
-    if 'HYSMyeongJo-Medium' not in pdfmetrics.getRegisteredFontNames():pdfmetrics.registerFont(UnicodeCIDFont('HYSMyeongJo-Medium'))
-    return 'HYSMyeongJo-Medium'
+            except Exception:
+                continue
+    raise RuntimeError('한글 PDF 폰트를 찾지 못했습니다. requirements.txt의 koreanize-matplotlib 설치를 확인하세요.')
+
 
 def _clean(s):
-    return escape(str(s)).replace('·',' / ').replace('→',' -> ').replace('μ','u').replace('≤','&lt;=').replace('≥','&gt;=')
+    # Escaping only: preserve Korean punctuation and scientific symbols.
+    return escape(str(s)).replace('\n','<br/>')
+
 
 class BarFigure(Flowable):
-    def __init__(self,rows,font):
-        Flowable.__init__(self);self.rows=rows;self.font=font;self.width=165*mm;self.height=46*mm
+    def __init__(self, rows, font):
+        super().__init__()
+        self.rows=rows
+        self.font=font
+        self.width=166*mm
+        self.height=43*mm
     def draw(self):
-        c=self.canv;data=self.rows;high=max((z['충전 무효전력 (Mvar)'] for z in data),default=1) or 1
-        n=len(data);w=(self.width-22)/n;start=10
-        c.setStrokeColor(colors.HexColor('#BCCBDA'));c.line(start,18,self.width-10,18)
+        c=self.canv
+        data=self.rows
+        if not data: return
+        high=max((r['충전 무효전력 (Mvar)'] or 0 for r in data),default=1) or 1
+        w=(self.width-20)/len(data)
+        start=10
+        c.setStrokeColor(BORDER)
+        c.line(start,17,self.width-10,17)
         for i,z in enumerate(data):
-            val=z['충전 무효전력 (Mvar)'];h=val/high*(self.height-46)
-            xx=start+i*w+w*.18
-            c.setFillColor(BLUE if z['기준 시나리오'] else colors.HexColor('#93C3E4'))
-            c.rect(xx,18,w*.62,h,stroke=0,fill=1)
-            c.setFont(self.font,7.5);c.setFillColor(NAVY)
-            c.drawCentredString(xx+w*.31,20+h,f'{val:.1f}')
-            c.drawCentredString(xx+w*.31,5,f"{z['케이블 길이 (km)']:g} km")
+            val=z['충전 무효전력 (Mvar)'] or 0
+            h=val/high*(self.height-49)
+            xx=start+i*w+w*.17
+            c.setFillColor(BLUE if z['기준 시나리오'] else colors.HexColor('#91C6E5'))
+            c.roundRect(xx,17,w*.64,max(1,h),2,stroke=0,fill=1)
+            c.setFillColor(NAVY)
+            c.setFont(self.font,7.5)
+            c.drawCentredString(xx+w*.32,21+h,f'{val:,.1f}')
+            c.drawCentredString(xx+w*.32,5,f"{z['케이블 길이 (km)']:g} km")
+
 
 def report_pdf_pretty(x:Inputs,r:Results,docs:list[dict],ai_text:str='',comparison:list[dict]|None=None,model:str='') -> bytes:
     font=_font()
-    style={
-      'title':ParagraphStyle('title',fontName=font,fontSize=17,leading=24,textColor=NAVY,spaceAfter=10),
-      'subtitle':ParagraphStyle('subtitle',fontName=font,fontSize=9,leading=15,textColor=colors.HexColor('#64748B'),spaceAfter=10),
-      'head':ParagraphStyle('head',fontName=font,fontSize=12,leading=18,textColor=BLUE,spaceBefore=12,spaceAfter=6,keepWithNext=True),
-      'text':ParagraphStyle('text',fontName=font,fontSize=9.2,leading=15,spaceAfter=6,wordWrap='CJK'),
-      'cell':ParagraphStyle('cell',fontName=font,fontSize=8.4,leading=12,wordWrap='CJK'),
+    styles={
+        'title':ParagraphStyle('wgtitle',fontName=font,fontSize=16.5,leading=22,textColor=NAVY,spaceAfter=5),
+        'subtitle':ParagraphStyle('wgsub',fontName=font,fontSize=8.1,leading=12,textColor=GRAY,spaceAfter=7,wordWrap='CJK'),
+        'head':ParagraphStyle('wghead',fontName=font,fontSize=11,leading=15,textColor=BLUE,spaceBefore=8,spaceAfter=5,keepWithNext=True),
+        'text':ParagraphStyle('wgtext',fontName=font,fontSize=8.5,leading=13,spaceAfter=4,wordWrap='CJK'),
+        'cell':ParagraphStyle('wgcell',fontName=font,fontSize=8,leading=11.8,wordWrap='CJK'),
+        'tiny':ParagraphStyle('wgtiny',fontName=font,fontSize=7.3,leading=11,wordWrap='CJK'),
     }
-    def P(s,kind='text'):return Paragraph(_clean(s),style[kind])
-    def T(headers,rows,widths):
-        values=[[P(v,'cell') for v in headers]]+[[P(v,'cell') for v in row] for row in rows]
-        table=Table(values,colWidths=widths,repeatRows=1,hAlign='LEFT')
-        table.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),PALE),('GRID',(0,0),(-1,-1),.4,colors.HexColor('#DAE4ED')),
-           ('VALIGN',(0,0),(-1,-1),'TOP'),('LEFTPADDING',(0,0),(-1,-1),7),('RIGHTPADDING',(0,0),(-1,-1),7),
-           ('TOPPADDING',(0,0),(-1,-1),7),('BOTTOMPADDING',(0,0),(-1,-1),7)]))
+    def P(s,kind='text'): return Paragraph(_clean(s),styles[kind])
+    def T(headers, rows, widths, small=False):
+        kind='tiny' if small else 'cell'
+        data=[[P(v,kind) for v in headers]]+[[P(v,kind) for v in row] for row in rows]
+        table=Table(data,colWidths=widths,repeatRows=1,hAlign='LEFT')
+        table.setStyle(TableStyle([
+            ('BACKGROUND',(0,0),(-1,0),PALE),
+            ('GRID',(0,0),(-1,-1),.4,BORDER),
+            ('VALIGN',(0,0),(-1,-1),'TOP'),
+            ('LEFTPADDING',(0,0),(-1,-1),6),('RIGHTPADDING',(0,0),(-1,-1),6),
+            ('TOPPADDING',(0,0),(-1,-1),5 if small else 6),
+            ('BOTTOMPADDING',(0,0),(-1,-1),5 if small else 6),
+        ]))
         return table
-    st=[P('해상풍력 계통연계 및 공급망 영향 분석','title'),P(f'프로젝트: {x.project} / 교육용 정상상태 간이 모델 / 설계 및 발주 확정에 사용 불가','subtitle')]
-    st.append(P('1. 입력 조건','head'))
-    st.append(T(['항목','값'],[
-      ['정격용량 / 운전출력',f'{x.capacity_mw:g} MW / {x.operating_mw:g} MW'],
-      ['해저케이블 / 전압 / 회선',f'{x.length_km:g} km / {x.voltage_kv:g} kV / {x.circuits}회선'],
-      ['연계방식 / 단락용량',f'{x.connection} / {x.short_circuit_mva:g} MVA'],
-      ['정전용량 / 저항 (상별 가정)',f'{x.capacitance_uf_km:g} uF/km / {x.resistance_ohm_km:g} ohm/km'],
-      ['주파수 / 역률 / COD',f'{x.frequency_hz:g} Hz / {x.power_factor:g} / {x.cod}']], [72*mm,97*mm]))
-    st.append(P('2. 계산 결과 및 예시 판정','head'))
-    def fmt(v,unit=''):return '미산출' if v is None else f'{v:,.3f} {unit}'
-    st.append(T(['항목','계산값'],[
-      ['충전 무효전력 합계',fmt(r.qc_total_mvar,'Mvar')],['회선당 부하전류',fmt(r.current_per_circuit_a,'A')],
-      ['부하전류 성분 저항손실',fmt(r.load_loss_mw,'MW')+' / '+fmt(r.load_loss_percent,'%')],
-      ['단순 SCR',fmt(r.scr)],['종합 검토 수준 (수업용)',overall(screening(x,r))]],[85*mm,84*mm]))
+    def section(name): return P(name,'head')
+    def fmt(v,unit=''): return '미산출' if v is None else f'{v:,.3f}{(" "+unit) if unit else ""}'
+    st=[P('해상풍력 계통연계 및 공급망 영향 분석','title'),
+        P(f'프로젝트: {x.project}  |  교육용 정상상태 간이 모델  |  설계·발주 확정에 사용 불가','subtitle')]
+    st.append(section('1. 입력 조건'))
+    st.append(T(['항목','값','항목','값'],[
+        ['정격 / 운전 출력',f'{x.capacity_mw:g} / {x.operating_mw:g} MW','해저케이블',f'{x.length_km:g} km'],
+        ['연계전압',f'{x.voltage_kv:g} kV','회선 / 방식',f'{x.circuits}회선 / {x.connection}'],
+        ['단락용량',f'{x.short_circuit_mva:g} MVA','주파수 / 역률',f'{x.frequency_hz:g} Hz / {x.power_factor:g}'],
+        ['정전용량 / 저항',f'{x.capacitance_uf_km:g} μF/km / {x.resistance_ohm_km:g} Ω/km','목표 COD',x.cod],
+    ],[35*mm,50*mm,35*mm,49*mm],small=True))
+    st.append(section('2. 계산 결과 · 수업용 예시 판정'))
+    st.append(T(['충전 무효전력','부하전류 성분 손실','단순 SCR','종합 검토'],[[
+        fmt(r.qc_total_mvar,'Mvar'),
+        f'{fmt(r.load_loss_mw,"MW")} / {fmt(r.load_loss_percent,"%")}',
+        fmt(r.scr), overall(screening(x,r))
+    ]],[43*mm,52*mm,29*mm,45*mm],small=True))
     if comparison:
-        st.append(P('3. 케이블 길이만 변경한 시나리오 비교','head'))
-        st.append(P('다른 입력값은 모두 고정하고 케이블 길이만 변경. 아래 Qc는 보상 전 충전 무효전력임.'))
-        st.append(BarFigure(comparison,font))
-        st.append(T(['길이','Qc','손실 (부하전류)','리액터 검토'],[
-          [f"{z['케이블 길이 (km)']:g} km",f"{z['충전 무효전력 (Mvar)']:.2f} Mvar",f"{z['부하전류 저항손실 (MW)']:.2f} MW",z['리액터 검토']] for z in comparison],
-          [26*mm,44*mm,55*mm,44*mm]))
-        for note in scenario_takeaways(x,comparison):st.append(P('- '+note))
-    st.append(P('4. 기자재 / 공급망 검토 체크리스트','head'))
-    st.append(T(['기자재','우선순위 (가정)','구매 확인사항'],[
-      [a['기자재'],a['우선순위'],a['구매확인']] for a in scm_review(x,r)], [43*mm,35*mm,91*mm]))
-    st.append(P('5. 해석과 한계','head'))
+        st.append(section('3. 케이블 길이별 시나리오 비교'))
+        st.append(P('케이블 길이만 변경하며, 나머지 입력 조건은 고정. 충전 무효전력(Qc)은 보상 전 계산값.','tiny'))
+        # Keep the bar chart and the full comparison table together whenever possible.
+        comp=[BarFigure(comparison,font),Spacer(1,3*mm),
+              T(['길이','Qc','저항손실','리액터 검토','SCM 검토 단계'],[
+                [f"{z['케이블 길이 (km)']:g} km",f"{z['충전 무효전력 (Mvar)']:.2f} Mvar",
+                 f"{z['부하전류 저항손실 (MW)']:.2f} MW",z['리액터 검토'],
+                 z.get('SCM 조치','기본 확인')] for z in comparison
+              ],[22*mm,42*mm,37*mm,31*mm,37*mm],small=True)]
+        st.append(KeepTogether(comp))
+        # Page 2 starts with procurement impacts, not a split comparison table.
+        st.append(PageBreak())
+        st.append(section('4. 시나리오별 공급망·일정 검토'))
+        st.append(T(['시나리오','리액터 검토','조달 검토사항 / 일정 영향'],[
+            [f"{z['케이블 길이 (km)']:g} km",z['리액터 검토'],z.get('SCM 상세','검토 필요')]
+            for z in comparison
+        ],[25*mm,31*mm,113*mm],small=True))
+        for note in scenario_takeaways(x,comparison): st.append(P('• '+note,'tiny'))
+    else:
+        st.append(section('3. 기자재·공급망 검토'))
+    if comparison: st.append(section('5. 기준 시나리오의 기자재별 조달 체크리스트'))
+    st.append(T(['기자재','검토 수준','확인할 설계·구매·일정 사항'],[
+        [a['기자재'],a['우선순위'],a['구매확인']] for a in scm_review(x,r)
+    ],[43*mm,30*mm,96*mm],small=True))
+    st.append(section('6. 분석 해석 및 한계' if comparison else '4. 분석 해석 및 한계'))
     st.append(P(template_summary(x,r)))
-    st.append(P('수치 판정의 경계값은 수업용 가정이며, 공인 계통기준이 아님. 리액터 발주 용량, STATCOM 필요 여부, 전체 손실, 케이블 허용전류, 실제 납기/가격/COD 영향은 이 모델로 결정하지 않음.'))
+    st.append(P('본 결과는 수업용 판정 경계에 따른 우선순위 표시임. 리액터 확정 용량, STATCOM 필요 여부, 전체 손실, 케이블 허용전류, 공급사 가격·납기 및 COD 지연은 산출하지 않음.'))
     if ai_text:
-        st.append(P('6. LLM 해석 초안 (원문 검증 및 전문가 검토 전)','head'))
-        st.append(P(f'AI 모델: {model or "사용자 지정"} / 입력값과 문서 발췌를 전송해 생성한 결과'))
+        st.append(section('7. 실제 LLM 분석 초안 · 원문 및 전문가 검증 전'))
+        st.append(P(f'실행 모델: {model or "사용자 지정"}. 입력 및 공개 문서 발췌를 외부 API에 전송하여 생성함.'))
         st.append(P(ai_text))
-    st.append(P('근거 문서','head'))
-    for d in docs[:10]:st.append(P(f"[{d['id']}] {d['name']} / {d['locator']} / {d['kind']}"))
-    out=io.BytesIO();doc=SimpleDocTemplate(out,pagesize=A4,leftMargin=20*mm,rightMargin=20*mm,topMargin=18*mm,bottomMargin=18*mm,
-        title='WindGrid SCM 교육용 분석 보고서')
-    def footer(canvas,doc):
-        canvas.saveState();canvas.setFont(font,7.5);canvas.setFillColor(colors.HexColor('#6B7C90'))
-        canvas.drawString(20*mm,10*mm,'WindGrid SCM / 교육용 분석 / 계산은 코드, 해석은 LLM')
-        canvas.drawRightString(A4[0]-20*mm,10*mm,str(doc.page));canvas.restoreState()
+    else:
+        st.append(P('AI 분석 상태: 미실행. 위 해석은 규칙 기반 템플릿이며 LLM 응답이 아님.','tiny'))
+    st.append(section('근거 문서 (원문 타당성 검증 별도)'))
+    for d in docs[:10]:
+        st.append(P(f"[{d['id']}] {d['name']} / {d['locator']} / {d['kind']}",'tiny'))
+    out=io.BytesIO()
+    doc=SimpleDocTemplate(out,pagesize=A4,leftMargin=20*mm,rightMargin=20*mm,
+                          topMargin=17*mm,bottomMargin=17*mm,title='WindGrid SCM v0.3 교육용 분석 보고서')
+    def footer(c,doc):
+        c.saveState();c.setFont(font,7);c.setFillColor(GRAY)
+        c.drawString(20*mm,10*mm,'WindGrid SCM v0.3  |  교육용 분석  |  계산은 코드, 해석은 LLM')
+        c.drawRightString(A4[0]-20*mm,10*mm,str(doc.page));c.restoreState()
     doc.build(st,onFirstPage=footer,onLaterPages=footer)
     return out.getvalue()

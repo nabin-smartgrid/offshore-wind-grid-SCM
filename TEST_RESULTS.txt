@@ -1,42 +1,17 @@
-PYTHON UNIT TESTS
-test_citation_ids (test_core.EvidenceTests.test_citation_ids) ... ok
-test_filename_escaping (test_core.EvidenceTests.test_filename_escaping) ... ok
-test_invalid_ext (test_core.EvidenceTests.test_invalid_ext) ... ok
-test_matching (test_core.EvidenceTests.test_matching) ... ok
-test_no_match (test_core.EvidenceTests.test_no_match) ... ok
-test_pdf (test_core.EvidenceTests.test_pdf) ... ok
-test_utf8_and_cp949 (test_core.EvidenceTests.test_utf8_and_cp949) ... ok
-test_demo_rules_off (test_core.ModelTests.test_demo_rules_off) ... ok
-test_deterministic (test_core.ModelTests.test_deterministic) ... ok
-test_hvdc_never_fake_zero (test_core.ModelTests.test_hvdc_never_fake_zero) ... ok
-test_idle_not_deenergized (test_core.ModelTests.test_idle_not_deenergized) ... ok
-test_invalid (test_core.ModelTests.test_invalid) ... ok
-test_length_comparison (test_core.ModelTests.test_length_comparison) ... ok
-test_length_scaling (test_core.ModelTests.test_length_scaling) ... ok
-test_power_factor (test_core.ModelTests.test_power_factor) ... ok
-test_report_reference_example (test_core.ModelTests.test_report_reference_example) ... ok
-test_scr (test_core.ModelTests.test_scr) ... ok
-test_two_circuits (test_core.ModelTests.test_two_circuits) ... ok
-test_voltage_scaling (test_core.ModelTests.test_voltage_scaling) ... ok
-test_zero_length (test_core.ModelTests.test_zero_length) ... ok
+WindGrid SCM v0.3 / local validation / 2026-10-29
 
-----------------------------------------------------------------------
-Ran 20 tests in 0.237s
+Command: python -m unittest discover -s tests -v
+Result: 29 tests passed.
 
-OK
+PDF validation:
+- Sample scenario comparison PDF generated (2 A4 pages).
+- Korean characters verified through pypdf text extraction and rendered PNG inspection.
+- Scenario chart and comparison table are together on page 1.
+- Scenario-specific SCM/procurement review is on page 2.
+- LLM-not-run status is explicit when Gemini API is not invoked.
 
-HTML BROWSER TESTS
-Default JavaScript/Python numerical parity: PASS
-Input change and recalculation: PASS
-Invalid-input rejection / previous-results preservation: PASS
-HVDC unavailable calculations: PASS
-Five-page navigation: PASS
-Local text upload / keyword search / HTML escaping: PASS
-JSON download: PASS
-HTML report download: PASS
-Print/PDF rendering: PASS
-Mobile layout horizontal overflow: PASS
-CDN-unavailable fallback: PASS (real Streamlit runtime NOT tested)
-Browser JavaScript uncaught errors: NONE
-
-NOT VERIFIED: Actual Streamlit server startup, Stlite runtime loading, Gemini API call, real grid studies.
+Limitations:
+- Streamlit Cloud deployment not executed in this environment.
+- The koreanize-matplotlib dependency is declared for Streamlit Cloud, but its installation on that cloud must be checked after deployment.
+- Gemini API integration remains optional and was not live-tested.
+- Engineering screening thresholds are educational assumptions, not grid-code criteria.

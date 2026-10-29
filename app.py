@@ -12,7 +12,7 @@ from core import (Inputs,calculate,screening,overall,equipment,compare_lengths,
                   template_summary,state_digest,DEMO_RULES,MODEL_NOTES)
 from evidence import BUILTIN,extract_document,retrieve,llm_prompt,call_gemini,citation_check
 from reporting import report_markdown,report_html,report_pdf
-from scenarios import scm_review, compare_scenarios, scenario_takeaways
+from scenarios import scm_review, compare_scenarios, scenario_takeaways, scenario_procurement_changes
 
 st.set_page_config(page_title='WindGrid | 계통·공급망 분석',page_icon='⚡',layout='wide',initial_sidebar_state='expanded')
 BROWSER = sys.platform == 'emscripten'
@@ -82,7 +82,7 @@ fingerprint=state_digest(x,docs)
 if st.session_state.llm_result and st.session_state.llm_result['fingerprint']!=fingerprint:
     st.session_state.llm_result=None
 
-st.markdown('<div class="wg-top"><span class="wg-word">OFFSHORE WIND / GRID TO PROCUREMENT</span><span class="wg-badge">교육용 프로토타입 · v0.2</span></div>',unsafe_allow_html=True)
+st.markdown('<div class="wg-top"><span class="wg-word">OFFSHORE WIND / GRID TO PROCUREMENT</span><span class="wg-badge">교육용 프로토타입 · v0.3</span></div>',unsafe_allow_html=True)
 st.title('해상풍력 계통연계 · 공급망 영향 분석')
 st.caption('전기적 조건을 계산하고, 기자재와 조달 일정에서 확인할 일을 연결합니다.')
 nav=st.radio('화면 이동',['① 프로젝트 입력','② 근거 문서','③ 분석 진행','④ 분석 결과','⑤ AI 보고서','⑥ 시나리오 비교'],index=3,horizontal=True,label_visibility='collapsed',key='nav')
@@ -195,7 +195,7 @@ elif nav.startswith('⑤'):
     col2.download_button('입력·계산 JSON 저장',json.dumps({'inputs':asdict(x),'results':asdict(r),'rules':DEMO_RULES,'source':'교육용 가정'},ensure_ascii=False,indent=2),'windgrid_results.json','application/json',use_container_width=True)
     if not BROWSER:
         try: col3.download_button('개선된 PDF 저장',report_pdf_pretty(x,r,docs,ai['text'] if ai else '',model=ai['model'] if ai else ''),'windgrid_report.pdf','application/pdf',use_container_width=True)
-        except (ImportError,RuntimeError) as e:col3.info('PDF 지원 설치를 확인하세요. HTML 보고서를 열어 인쇄 → PDF로 저장할 수도 있습니다.')
+        except (ImportError,RuntimeError) as e:col3.error(f'PDF 생성 불가: {e}')
     else:col3.info('브라우저판: HTML 보고서를 열어 인쇄 → PDF로 저장')
     with st.expander('LLM 연결 (선택) · 공개 자료만 전송',expanded=False):
         st.warning('현재 기본 화면은 템플릿 모드입니다. 아래 버튼을 눌러야 외부 API를 호출합니다. 호출 비용이 발생할 수 있습니다.')
@@ -246,12 +246,16 @@ else:
         st.caption(f'고정 조건: 정격 {x.capacity_mw:g}MW / 운전 {x.operating_mw:g}MW / {x.voltage_kv:g}kV / {x.circuits}회선 / C={x.capacitance_uf_km:g}μF/km / SCR={r.scr:.2f}')
         st.bar_chart(comparison,x='케이블 길이 (km)',y='충전 무효전력 (Mvar)',height=260)
         st.dataframe(comparison,use_container_width=True,hide_index=True)
+        st.markdown('#### 조건 변화에 따른 SCM·일정 검토사항')
+        st.dataframe(scenario_procurement_changes(x,comparison),use_container_width=True,hide_index=True)
+        st.caption('우선순위는 수업용 가정이며 실제 리드타임·가격·COD 지연을 예측하거나 발주를 확정하지 않습니다.')
         st.markdown('#### 비교 결과 해석 (규칙 기반, AI 미사용)')
         for line in scenario_takeaways(x,comparison):st.write('- '+line)
         st.markdown('#### 기자재별 조달 검토 우선순위 (현재 입력값 기준)')
         st.dataframe(scm_review(x,r),use_container_width=True,hide_index=True)
         st.caption('우선순위는 수업용 예시 경계값에 따른 체크리스트입니다. 실제 설비 필요성·용량·가격·납기를 확정하지 않습니다.')
         st.markdown('#### 시나리오 비교 보고서 다운로드')
+        st.caption('PDF에는 그래프·비교표·SCM 검토사항이 포함됩니다. LLM 분석은 실제 API 실행 시에만 표시됩니다.')
         comp_ai=st.session_state.get('comparison_ai')
         comp_key=state_digest(x,docs)+json.dumps(chosen)
         if comp_ai and comp_ai['fingerprint']!=comp_key:

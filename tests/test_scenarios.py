@@ -36,3 +36,22 @@ class ScenarioTests(unittest.TestCase):
   self.assertTrue(b.startswith(b'%PDF'))
 
 if __name__=='__main__':unittest.main()
+
+class Version03Tests(unittest.TestCase):
+ def test_korean_pdf_extractable_and_chart_table_on_page_one(self):
+  x=Inputs(); r=calculate(x)
+  rows=compare_scenarios(x,[30,50,80])
+  b=report_pdf_pretty(x,r,BUILTIN,comparison=rows)
+  reader=PdfReader(io.BytesIO(b))
+  self.assertIn('해상풍력 계통연계',reader.pages[0].extract_text())
+  self.assertIn('시나리오 비교',reader.pages[0].extract_text())
+  self.assertIn('80 km',reader.pages[0].extract_text())
+  self.assertIn('SCM',reader.pages[0].extract_text())
+  self.assertIn('시나리오별 공급망',reader.pages[1].extract_text())
+ def test_scm_details_change_with_length(self):
+  x=Inputs(); a,b=compare_scenarios(x,[10,150])[0],compare_scenarios(x,[10,150])[-1]
+  self.assertNotEqual(a['SCM 조치'],b['SCM 조치'])
+  self.assertIn('발주 일정 영향',b['SCM 상세'])
+ def test_no_llm_claim_when_not_run(self):
+  x=Inputs();reader=PdfReader(io.BytesIO(report_pdf_pretty(x,calculate(x),BUILTIN)))
+  self.assertIn('AI 분석 상태: 미실행','\n'.join(p.extract_text() for p in reader.pages))

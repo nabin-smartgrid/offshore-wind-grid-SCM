@@ -31,7 +31,9 @@ def compare_scenarios(base: Inputs, lengths: list[float]) -> list[dict]:
                     '저항손실률 (%)':None if r.load_loss_percent is None else round(r.load_loss_percent,3),
                     '단순 SCR':round(r.scr,3),'리액터 검토':actions[0]['우선순위'],
                     '케이블 검토':actions[2]['우선순위'],'종합 예시 수준':overall(screening(x,r)),
-                    '기준 시나리오':abs(km-base.length_km)<1e-9})
+                    '기준 시나리오':abs(km-base.length_km)<1e-9,
+                    'SCM 조치': procurement_stage(actions[0]['우선순위']),
+                    'SCM 상세': procurement_detail(x,r,actions)})
     return out
 
 def scenario_takeaways(base: Inputs, rows: list[dict]) -> list[str]:
@@ -42,3 +44,47 @@ def scenario_takeaways(base: Inputs, rows: list[dict]) -> list[str]:
       '케이블 길이에 따라 리액터 검토 우선순위가 달라질 수 있지만, Qc는 리액터 발주 용량이 아닙니다.',
       'SCR은 길이만 변경하면 변하지 않습니다. 단락용량이나 정격용량을 바꿔야 달라집니다.',
       '실제 추가 설비, 비용, 납기, COD 지연은 근거 자료가 없어 산정하지 않았습니다.']
+
+
+def procurement_stage(priority: str) -> str:
+    """Illustrative next-step stage, not an equipment procurement authorization."""
+    return {
+        '우선 검토':'FEED 우선 확인',
+        '추가 검토':'사양·범위 확인',
+        '기본 확인':'기본 조건 확인',
+        '현재 입력상 Qc 없음':'해당 없음',
+    }.get(priority,'별도 해석')
+
+
+def procurement_detail(x: Inputs, r: Results, actions: list[dict] | None = None) -> str:
+    """Scenario-dependent SCM checks; no invented lead times, prices or COD dates."""
+    if x.connection!='HVAC':
+        return 'VSC-HVDC 변환소와 DC 케이블의 공급 범위·인터페이스·제조사 자료 별도 검토'
+    actions=actions or scm_review(x,r)
+    reactor=actions[0]['우선순위']
+    loss=actions[2]['우선순위']
+    items=[]
+    if reactor=='우선 검토':
+        items.append('리액터 보상량·OSS/OnSS 배치의 FEED 선행 확인; 사양 확정 지연 시 발주 일정 영향 검토')
+    elif reactor=='추가 검토':
+        items.append('리액터 적용 여부·설치 위치 검토; 필요 시 공급사 자료 요청')
+    else:
+        items.append('케이블 충전 무효전력 기초 확인; 리액터 발주 필요성 미확정')
+    if loss=='우선 검토':
+        items.append('케이블 열적 정격·회선 구성 및 손실 가정 우선 검토')
+    elif loss=='추가 검토':
+        items.append('케이블 저항·허용전류 데이터시트 추가 확인')
+    if r.scr<3:
+        items.append('약계통 가능성: WTG 컨버터·STATCOM 동적 해석과 사양 인터페이스 확인')
+    return '; '.join(items)
+
+
+def scenario_procurement_changes(base: Inputs, rows: list[dict]) -> list[dict]:
+    """Per-scenario procurement screening for UI and report export."""
+    return [{
+        '케이블 길이 (km)': z['케이블 길이 (km)'],
+        '리액터 검토':z['리액터 검토'],
+        '케이블 검토':z['케이블 검토'],
+        '조달 검토 단계':z['SCM 조치'],
+        'SCM·일정 검토사항':z['SCM 상세'],
+    } for z in rows]
