@@ -1,6 +1,6 @@
 """Local text extraction and transparent keyword retrieval. No embedding service."""
 from __future__ import annotations
-import io, re, hashlib, json, urllib.request, urllib.error, time
+import io, re, hashlib, json, urllib.request, urllib.error, urllib.parse, time
 from pathlib import Path
 
 BUILTIN = [
@@ -82,7 +82,6 @@ def available_gemini_models(api_key: str) -> list[str]:
     for _ in range(10):
         url = 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=100'
         if token:
-            import urllib.parse
             url += '&pageToken=' + urllib.parse.quote(token, safe='')
         req = urllib.request.Request(url, headers={'x-goog-api-key': api_key.strip()})
         try:
