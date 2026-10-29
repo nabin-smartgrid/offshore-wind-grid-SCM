@@ -27,27 +27,54 @@ BORDER=colors.HexColor('#D8E4EC')
 
 
 def _font():
+    """Find an installed Korean TTF; never silently create a blank Korean PDF.
+
+    Streamlit Cloud installs Debian's fonts-nanum through packages.txt.
+    The fallback search also supports local Windows/macOS and the
+    optional koreanize-matplotlib wheel, without bundling font files.
+    """
     if 'WGKorean' in pdfmetrics.getRegisteredFontNames():
         return 'WGKorean'
-    candidates = [os.getenv('KOREAN_FONT_PATH',''),
-                  '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
-                  '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
-                  r'C:\Windows\Fonts\malgun.ttf']
-    # koreanize-matplotlib supplies NanumGothic on pip-managed cloud environments.
+
+    candidates = [
+        os.getenv('KOREAN_FONT_PATH', ''),
+        '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+        '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
+        '/usr/local/share/fonts/NanumGothic.ttf',
+        r'C:\Windows\Fonts\malgun.ttf',
+        '/System/Library/Fonts/AppleSDGothicNeo.ttc',
+    ]
+    # Some koreanize-matplotlib distributions place font files under a
+    # different filename or subdirectory. Search by extension and register
+    # the first TTF that ReportLab accepts.
     try:
         import koreanize_matplotlib
-        root=Path(koreanize_matplotlib.__file__).resolve().parent
-        candidates.extend(str(p) for p in root.rglob('*.ttf') if 'nanum' in p.name.lower())
-    except ImportError:
+        root = Path(koreanize_matplotlib.__file__).resolve().parent
+        candidates.extend(str(p) for p in root.rglob('*.ttf'))
+    except (ImportError, OSError):
         pass
-    for path in candidates:
-        if path and Path(path).is_file():
-            try:
-                pdfmetrics.registerFont(TTFont('WGKorean',str(path)))
-                return 'WGKorean'
-            except Exception:
-                continue
-    raise RuntimeError('한글 PDF 폰트를 찾지 못했습니다. requirements.txt의 koreanize-matplotlib 설치를 확인하세요.')
+    # Debian package fonts-nanum may install under alternate paths.
+    for base in ('/usr/share/fonts/truetype/nanum', '/usr/local/share/fonts'):
+        folder = Path(base)
+        if folder.is_dir():
+            candidates.extend(str(p) for p in folder.rglob('*.ttf')
+                              if any(k in p.name.lower() for k in ('nanum', 'noto', 'gothic')))
+
+    attempted = []
+    for path in dict.fromkeys(p for p in candidates if p):
+        if not Path(path).is_file():
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont('WGKorean', path))
+            return 'WGKorean'
+        except Exception as exc:
+            attempted.append(f'{Path(path).name}: {type(exc).__name__}')
+    raise RuntimeError(
+        '한글 PDF 폰트가 설치되어 있지 않거나 등록에 실패했습니다. '
+        '저장소 루트에 packages.txt 파일을 만들고 fonts-nanum을 한 줄로 입력한 후 '
+        'Streamlit Cloud에서 Reboot app을 실행하세요. '
+        f'폰트 등록 실패: {", ".join(attempted[:4]) or "사용 가능한 TTF 파일 없음"}'
+    )
 
 
 def _clean(s):
