@@ -10,7 +10,7 @@ import json, os, sys
 import streamlit as st
 from core import (Inputs,calculate,screening,overall,equipment,compare_lengths,
                   template_summary,state_digest,DEMO_RULES,MODEL_NOTES)
-from evidence import BUILTIN,extract_document,retrieve,llm_prompt,call_gemini,citation_check,check_ai_numbers
+from evidence import BUILTIN,extract_document,retrieve,llm_prompt,call_gemini,citation_check,check_ai_numbers,available_gemini_models
 from reporting import report_markdown,report_html,report_pdf
 from scenarios import scm_review, compare_scenarios, scenario_takeaways, scenario_procurement_changes
 
@@ -224,7 +224,28 @@ elif nav.startswith('⑤'):
             key=_secret('GEMINI_API_KEY')
             if key: st.success('Gemini API 키가 Streamlit Cloud Secrets에 설정됨')
             else: st.info('Cloud 관리 화면 → App settings → Secrets에 GEMINI_API_KEY를 등록하세요.')
-            model=st.text_input('Gemini 모델 ID',value=_secret('GEMINI_MODEL','gemini-2.5-flash'),help='계정에서 사용 가능한 모델 ID')
+            model=st.text_input('Gemini 모델 ID',value=_secret('GEMINI_MODEL','gemini-3.8-flash'),help='현재 API 키로 사용 가능한 모델을 아래 진단 버튼에서 확인하세요.')
+            with st.expander('API 연결 진단 (프로젝트 데이터 전송 없음)', expanded=False):
+                st.caption('Google 모델 목록만 조회하거나 짧은 테스트 문장만 전송합니다. API 키는 화면에 표시되지 않습니다.')
+                if st.button('사용 가능한 모델 목록 조회', disabled=not key):
+                    try:
+                        with st.spinner('API 모델 목록 확인 중...'):
+                            st.session_state['gemini_models']=available_gemini_models(key)
+                    except Exception as err:
+                        st.error(str(err)[:250])
+                known=st.session_state.get('gemini_models', [])
+                if known:
+                    st.success(f'모델 목록 조회 성공: {len(known)}개')
+                    st.write('현재 선택한 모델:', '목록에 있음' if model in known else '목록에 없음')
+                    st.write('사용 가능한 텍스트 모델 (일부):', ', '.join([m for m in known if 'flash' in m][:20]))
+                if st.button('선택 모델 간단 호출 테스트', disabled=not (key and model)):
+                    try:
+                        with st.spinner('간단 테스트 호출 중...'):
+                            answer=call_gemini(key,model,'한국어로 연결 성공이라고만 답하세요.')
+                        st.success('Gemini API 생성 호출 성공')
+                        st.caption('테스트 응답: '+answer[:120])
+                    except Exception as err:
+                        st.error(str(err)[:250])
             prompt_query=st.text_input('분석 초점','무효전력 리액터 STATCOM 계통 공급망 납기')
             selected=retrieve(docs,prompt_query,6)
             payload={'inputs':asdict(x),'results':asdict(r),'screening':rows,'notes':'판정규칙은 수업용 가정, 공인기준 아님'}
