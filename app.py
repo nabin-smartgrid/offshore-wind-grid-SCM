@@ -12,9 +12,12 @@ from core import (Inputs,calculate,screening,overall,equipment,compare_lengths,
                   template_summary,state_digest,DEMO_RULES,MODEL_NOTES)
 from evidence import BUILTIN,extract_document,retrieve,llm_prompt,call_gemini,citation_check
 from reporting import report_markdown,report_html,report_pdf
+from scenarios import scm_review, compare_scenarios, scenario_takeaways
 
 st.set_page_config(page_title='WindGrid | 계통·공급망 분석',page_icon='⚡',layout='wide',initial_sidebar_state='expanded')
 BROWSER = sys.platform == 'emscripten'
+if not BROWSER:
+    from reporting_v2 import report_pdf_pretty
 st.markdown('''<style>
 .stApp{background:#f7f9fc} [data-testid="stSidebar"]{background:#edf2f8;border-right:1px solid #dce4ee}
 .block-container{padding-top:1.5rem;padding-bottom:2rem;max-width:1500px}
@@ -79,10 +82,10 @@ fingerprint=state_digest(x,docs)
 if st.session_state.llm_result and st.session_state.llm_result['fingerprint']!=fingerprint:
     st.session_state.llm_result=None
 
-st.markdown('<div class="wg-top"><span class="wg-word">OFFSHORE WIND / GRID TO PROCUREMENT</span><span class="wg-badge">교육용 프로토타입 · v0.1</span></div>',unsafe_allow_html=True)
+st.markdown('<div class="wg-top"><span class="wg-word">OFFSHORE WIND / GRID TO PROCUREMENT</span><span class="wg-badge">교육용 프로토타입 · v0.2</span></div>',unsafe_allow_html=True)
 st.title('해상풍력 계통연계 · 공급망 영향 분석')
 st.caption('전기적 조건을 계산하고, 기자재와 조달 일정에서 확인할 일을 연결합니다.')
-nav=st.radio('화면 이동',['① 프로젝트 입력','② 근거 문서','③ 분석 진행','④ 분석 결과','⑤ AI 보고서'],index=3,horizontal=True,label_visibility='collapsed',key='nav')
+nav=st.radio('화면 이동',['① 프로젝트 입력','② 근거 문서','③ 분석 진행','④ 분석 결과','⑤ AI 보고서','⑥ 시나리오 비교'],index=3,horizontal=True,label_visibility='collapsed',key='nav')
 st.markdown('<div class="wg-rule">수업용 가정값을 사용한 간이 모델입니다. 결과는 검토의 출발점이며, 설계 확정·계통 합격·발주 용량을 뜻하지 않습니다.</div>',unsafe_allow_html=True)
 
 def nice(v:float|None,dec:int=2):return '미산출' if v is None else f'{v:,.{dec}f}'
@@ -168,8 +171,8 @@ elif nav.startswith('④'):
     with right:
         st.markdown('#### 기자재 · SCM 영향')
         table='<table class="wg-table"><thead><tr><th>기자재</th><th>확인할 사항</th><th>조달·설계 영향</th></tr></thead><tbody>'
-        for row in equipment(x,r):
-            table+='<tr><td><b>'+escape(row['기자재'])+'</b><br><span class="wg-small">'+escape(row['상태'])+'</span></td><td>'+escape(row['검토사항'])+'</td><td>'+escape(row['공급망영향'])+'</td></tr>'
+        for row in scm_review(x,r):
+            table+='<tr><td><b>'+escape(row['기자재'])+'</b><br><span class="wg-small">'+escape(row['우선순위'])+'</span></td><td>'+escape(row['검토이유'])+'</td><td>'+escape(row['구매확인'])+'</td></tr>'
         st.markdown(table+'</tbody></table>',unsafe_allow_html=True)
         st.caption('출처: 관심영역 보고서 §2·§4·§5. 납기·가격·용량은 미확인입니다.')
     st.markdown('#### 결과 읽기')
@@ -182,7 +185,7 @@ elif nav.startswith('④'):
         for key,val in DEMO_RULES.items():st.write(f'**{key}**: {val}')
         for note in MODEL_NOTES:st.write('- '+note)
 
-else:
+elif nav.startswith('⑤'):
     st.subheader('05 / 보고서 생성과 근거 확인')
     st.write('API 없이도 계산 결과·가정·검토사항이 담긴 보고서를 저장할 수 있습니다.')
     ai=st.session_state.llm_result
@@ -191,7 +194,7 @@ else:
     col1.download_button('HTML 보고서 저장',report_html(md),'windgrid_report.html','text/html',use_container_width=True)
     col2.download_button('입력·계산 JSON 저장',json.dumps({'inputs':asdict(x),'results':asdict(r),'rules':DEMO_RULES,'source':'교육용 가정'},ensure_ascii=False,indent=2),'windgrid_results.json','application/json',use_container_width=True)
     if not BROWSER:
-        try: col3.download_button('PDF 보고서 저장',report_pdf(md),'windgrid_report.pdf','application/pdf',use_container_width=True)
+        try: col3.download_button('개선된 PDF 저장',report_pdf_pretty(x,r,docs,ai['text'] if ai else '',model=ai['model'] if ai else ''),'windgrid_report.pdf','application/pdf',use_container_width=True)
         except (ImportError,RuntimeError) as e:col3.info('PDF 지원 설치를 확인하세요. HTML 보고서를 열어 인쇄 → PDF로 저장할 수도 있습니다.')
     else:col3.info('브라우저판: HTML 보고서를 열어 인쇄 → PDF로 저장')
     with st.expander('LLM 연결 (선택) · 공개 자료만 전송',expanded=False):
@@ -230,5 +233,62 @@ else:
     st.write('현재 제공된 자료만으로 실제 납기·가격·허용 손실률·리액터 용량·STATCOM 필요성은 확정할 수 없습니다.')
     for c in BUILTIN:
         st.caption(f'[{c["id"]}] {c["name"]} / {c["locator"]} / {c["kind"]}')
+
+else:
+    st.subheader('06 / 케이블 길이별 시나리오 비교')
+    st.write('**한 번에 변수 하나만 바꿔서** 결과가 어떻게 달라지는지 살펴봅니다. 이번 비교에서는 케이블 길이만 변경합니다.')
+    if x.connection!='HVAC':
+        st.warning('현재 VSC-HVDC 선택 상태입니다. AC 케이블 충전 무효전력 계산을 적용하지 않으므로 HVAC를 선택해야 길이 비교가 가능합니다.')
+    else:
+        chosen=st.multiselect('비교할 케이블 길이 (km)',options=[10,20,30,40,50,60,65,70,80,90,100,120,150,200],default=[30,50,80],max_selections=10,
+                              help='현재 입력한 기준 길이는 자동 포함됩니다. 다른 조건은 고정됩니다.')
+        comparison=compare_scenarios(x,chosen)
+        st.caption(f'고정 조건: 정격 {x.capacity_mw:g}MW / 운전 {x.operating_mw:g}MW / {x.voltage_kv:g}kV / {x.circuits}회선 / C={x.capacitance_uf_km:g}μF/km / SCR={r.scr:.2f}')
+        st.bar_chart(comparison,x='케이블 길이 (km)',y='충전 무효전력 (Mvar)',height=260)
+        st.dataframe(comparison,use_container_width=True,hide_index=True)
+        st.markdown('#### 비교 결과 해석 (규칙 기반, AI 미사용)')
+        for line in scenario_takeaways(x,comparison):st.write('- '+line)
+        st.markdown('#### 기자재별 조달 검토 우선순위 (현재 입력값 기준)')
+        st.dataframe(scm_review(x,r),use_container_width=True,hide_index=True)
+        st.caption('우선순위는 수업용 예시 경계값에 따른 체크리스트입니다. 실제 설비 필요성·용량·가격·납기를 확정하지 않습니다.')
+        st.markdown('#### 시나리오 비교 보고서 다운로드')
+        comp_ai=st.session_state.get('comparison_ai')
+        comp_key=state_digest(x,docs)+json.dumps(chosen)
+        if comp_ai and comp_ai['fingerprint']!=comp_key:
+            comp_ai=None
+        if not BROWSER:
+            st.download_button('시나리오 비교 PDF 다운로드',report_pdf_pretty(x,r,docs,comp_ai['text'] if comp_ai else '',comparison,model=comp_ai['model'] if comp_ai else ''),
+                file_name='windgrid_scenario_comparison.pdf',mime='application/pdf',type='primary')
+        else:
+            st.info('브라우저 실행판에서는 PDF 대신 Streamlit 서버판에서 다운로드하세요.')
+        st.download_button('시나리오 비교 JSON 다운로드',json.dumps({'baseline':asdict(x),'comparison':comparison,'review':scm_review(x,r)},ensure_ascii=False,indent=2),
+            file_name='windgrid_scenario_comparison.json',mime='application/json')
+        with st.expander('LLM으로 시나리오 비교 해석 (선택, 실제 Gemini API)',expanded=False):
+            st.write('계산은 Python이 수행합니다. LLM은 계산 결과를 해석하고 문서 근거가 있는 조달 검토사항을 제안합니다.')
+            if BROWSER:
+                st.info('브라우저판에서는 API 호출을 지원하지 않습니다.')
+            else:
+                api_key=st.text_input('Gemini API 키 (보고서에 저장되지 않음)',type='password',value=os.getenv('GEMINI_API_KEY',''),key='comp_api_key')
+                model_id=st.text_input('Gemini 모델 ID',value=os.getenv('GEMINI_MODEL',''),placeholder='사용 가능한 모델 ID',key='comp_model')
+                evidence_docs=retrieve(docs,'해저케이블 무효전력 리액터 공급망 계통',6)
+                payload={'baseline':asdict(x),'baseline_results':asdict(r),'comparison':comparison,
+                         'scm_review':scm_review(x,r),'caveat':'검토 경계는 수업용 가정. 납기, 가격, 발주량, COD 지연은 미산출.'}
+                prompt=llm_prompt(payload,evidence_docs)
+                st.caption(f'외부 전송: 계산 입력/결과, 시나리오 {len(comparison)}개, 공개 문서 발췌 {len(evidence_docs)}개. 회사 내부자료를 올리지 마세요.')
+                with st.expander('외부로 전송할 내용 확인'):st.text(prompt)
+                agree=st.checkbox('입력과 문서 발췌가 외부 API로 전송되어도 되는 공개 자료임을 확인함',key='comp_agree')
+                if st.button('Gemini로 시나리오 분석 생성',disabled=not(agree and api_key and model_id and evidence_docs),type='primary'):
+                    try:
+                        with st.spinner('실제 Gemini API 응답 대기 중...'):
+                            response=call_gemini(api_key,model_id,prompt)
+                        valid,invalid=citation_check(response,evidence_docs)
+                        st.session_state.comparison_ai={'text':response,'fingerprint':comp_key,'model':model_id,'valid':valid,'invalid':invalid}
+                        st.rerun()
+                    except Exception as err:st.error(str(err)[:300])
+        if comp_ai:
+            st.markdown('#### 실제 LLM 해석 (전문가 검증 전)')
+            st.write(comp_ai['text'])
+            st.caption(f'인용 ID 확인: {len(comp_ai["valid"])}개 / 미등록 ID: {len(comp_ai["invalid"])}개. ID 일치는 원문 내용 검증을 뜻하지 않습니다.')
+            if comp_ai['invalid'] or not comp_ai['valid']:st.warning('문서 인용을 검증하세요.')
 
 st.markdown('<div class="wg-foot">김희진 교수님 스마트그리드 개인 프로젝트 · 공개 자료 기반 가상 단지 · 계산은 코드, 해석은 LLM<br>숫자 검증 / 규칙의 출처 / AI 인용 검증은 서로 다른 작업입니다.</div>',unsafe_allow_html=True)
