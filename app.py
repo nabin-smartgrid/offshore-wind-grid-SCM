@@ -10,7 +10,7 @@ import json, os, sys
 import streamlit as st
 from core import (Inputs,calculate,screening,overall,equipment,compare_lengths,
                   template_summary,state_digest,DEMO_RULES,MODEL_NOTES)
-from evidence import BUILTIN,extract_document,retrieve,llm_prompt,call_gemini,citation_check,check_ai_numbers,available_gemini_models
+from evidence import BUILTIN,extract_document,retrieve,llm_prompt,call_gemini,citation_check,check_ai_numbers,available_gemini_models,gemini_model_details,diagnose_gemini_generate
 from reporting import report_markdown,report_html,report_pdf
 from scenarios import scm_review, compare_scenarios, scenario_takeaways, scenario_procurement_changes
 
@@ -101,7 +101,7 @@ fingerprint=state_digest(x,docs)
 if st.session_state.llm_result and st.session_state.llm_result['fingerprint']!=fingerprint:
     st.session_state.llm_result=None
 
-st.markdown('<div class="wg-top"><span class="wg-word">OFFSHORE WIND / GRID TO PROCUREMENT</span><span class="wg-badge">교육용 프로토타입 · v0.4</span></div>',unsafe_allow_html=True)
+st.markdown('<div class="wg-top"><span class="wg-word">OFFSHORE WIND / GRID TO PROCUREMENT</span><span class="wg-badge">교육용 프로토타입 · v0.4.2</span></div>',unsafe_allow_html=True)
 st.title('해상풍력 계통연계 · 공급망 영향 분석')
 st.caption('전기적 조건을 계산하고, 기자재와 조달 일정에서 확인할 일을 연결합니다.')
 nav=st.radio('화면 이동',['① 프로젝트 입력','② 근거 문서','③ 분석 진행','④ 분석 결과','⑤ AI 보고서','⑥ 시나리오 비교'],index=3,horizontal=True,label_visibility='collapsed',key='nav')
@@ -226,26 +226,38 @@ elif nav.startswith('⑤'):
             else: st.info('Cloud 관리 화면 → App settings → Secrets에 GEMINI_API_KEY를 등록하세요.')
             model=st.text_input('Gemini 모델 ID',value=_secret('GEMINI_MODEL','gemini-3.8-flash'),help='현재 API 키로 사용 가능한 모델을 아래 진단 버튼에서 확인하세요.')
             with st.expander('API 연결 진단 (프로젝트 데이터 전송 없음)', expanded=False):
-                st.caption('Google 모델 목록만 조회하거나 짧은 테스트 문장만 전송합니다. API 키는 화면에 표시되지 않습니다.')
-                if st.button('사용 가능한 모델 목록 조회', disabled=not key):
+                st.caption('모델 목록·메타데이터 조회는 생성 호출과 다릅니다. 짧은 생성 테스트는 12초 제한, 재시도 없음. API 키는 표시하지 않습니다.')
+                api_version=st.selectbox('진단할 API 버전', ['v1beta','v1'], key='diag_api_version')
+                if st.button('선택 API 버전의 모델 목록 조회', disabled=not key):
                     try:
-                        with st.spinner('API 모델 목록 확인 중...'):
-                            st.session_state['gemini_models']=available_gemini_models(key)
-                    except Exception as err:
-                        st.error(str(err)[:250])
-                known=st.session_state.get('gemini_models', [])
+                        with st.spinner('모델 목록 조회 중...'):
+                            st.session_state['gemini_models']=available_gemini_models(key,api_version)
+                            st.session_state['gemini_models_version']=api_version
+                    except Exception as err: st.error(str(err)[:420])
+                known=st.session_state.get('gemini_models', []) if st.session_state.get('gemini_models_version')==api_version else []
                 if known:
-                    st.success(f'모델 목록 조회 성공: {len(known)}개')
-                    st.write('현재 선택한 모델:', '목록에 있음' if model in known else '목록에 없음')
-                    st.write('사용 가능한 텍스트 모델 (일부):', ', '.join([m for m in known if 'flash' in m][:20]))
-                if st.button('선택 모델 간단 호출 테스트', disabled=not (key and model)):
+                    st.success(f'{api_version} generateContent 지원 모델 목록: {len(known)}개')
+                    st.write('현재 모델:', '목록에 있음' if model in known else '목록에 없음')
+                    st.caption('일부: '+', '.join([m for m in known if 'flash' in m][:12]))
+                if st.button('선택 모델 메타데이터 확인', disabled=not(key and model)):
                     try:
-                        with st.spinner('간단 테스트 호출 중...'):
-                            answer=call_gemini(key,model,'한국어로 연결 성공이라고만 답하세요.')
-                        st.success('Gemini API 생성 호출 성공')
-                        st.caption('테스트 응답: '+answer[:120])
+                        details=gemini_model_details(key,model,api_version)
+                        st.json(details)
+                    except Exception as err: st.error(str(err)[:420])
+                if st.button('짧은 생성 호출 테스트 (12초)', disabled=not(key and model)):
+                    try:
+                        with st.spinner(f'{api_version} 생성 호출 확인 중...'):
+                            answer=diagnose_gemini_generate(key,model,api_version)
+                        st.success(f'{api_version} 생성 호출 성공')
+                        st.caption('응답: '+answer[:100])
+                        st.session_state['gemini_working_api_version']=api_version
+                        st.session_state['gemini_working_model']=model
                     except Exception as err:
-                        st.error(str(err)[:250])
+                        st.error(str(err)[:420])
+                st.caption('404면 모델·버전·API 프로젝트 제한 확인. 429면 할당량, 503이면 서버/경로 문제 가능. 오류의 짧은 진단만 표시합니다.')
+            working_ver=st.session_state.get('gemini_working_api_version','v1beta')
+            working_model=st.session_state.get('gemini_working_model','')
+            st.caption(f'실제 분석 API 버전: {working_ver}'+ (' (간단 테스트에서 확인)' if working_model==model else ' (기본값; 테스트 미확인)'))
             prompt_query=st.text_input('분석 초점','무효전력 리액터 STATCOM 계통 공급망 납기')
             selected=retrieve(docs,prompt_query,6)
             payload={'inputs':asdict(x),'results':asdict(r),'screening':rows,'notes':'판정규칙은 수업용 가정, 공인기준 아님'}
@@ -256,7 +268,7 @@ elif nav.startswith('⑤'):
             if st.button('근거를 포함한 AI 해석 생성',disabled=not consent or not key or not model or not selected,type='primary'):
                 try:
                     with st.spinner('실제 Gemini API에 요청 중...'):
-                        text=call_gemini(key,model,prompt)
+                        text=call_gemini(key,model,prompt,working_ver if working_model==model else 'v1beta')
                     valid,invalid,issues=_ai_issues(text,selected,{'inputs':asdict(x),'results':asdict(r)})
                     st.session_state.llm_result={'text':text,'fingerprint':fingerprint,'model':model,'valid':valid,'invalid':invalid,'issues':issues}
                     st.rerun()
@@ -332,7 +344,7 @@ else:
                 if st.button('Gemini로 시나리오 분석 생성',disabled=not(agree and api_key and model_id and evidence_docs),type='primary'):
                     try:
                         with st.spinner('실제 Gemini API 응답 대기 중...'):
-                            response=call_gemini(api_key,model_id,prompt)
+                            response=call_gemini(api_key,model_id,prompt,st.session_state.get('gemini_working_api_version','v1beta') if st.session_state.get('gemini_working_model')==model_id else 'v1beta')
                         valid,invalid,issues=_ai_issues(response,evidence_docs,payload)
                         st.session_state.comparison_ai={'text':response,'fingerprint':comp_key,'model':model_id,'valid':valid,'invalid':invalid,'issues':issues}
                         st.rerun()
