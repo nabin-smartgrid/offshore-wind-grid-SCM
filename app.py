@@ -10,11 +10,30 @@ import json, os, sys
 import streamlit as st
 from core import (Inputs,calculate,screening,overall,equipment,compare_lengths,
                   template_summary,state_digest,DEMO_RULES,MODEL_NOTES)
-from evidence import BUILTIN,extract_document,retrieve,llm_prompt,call_gemini,citation_check
+from evidence import BUILTIN,extract_document,retrieve,llm_prompt,call_gemini,citation_check,check_ai_numbers
 from reporting import report_markdown,report_html,report_pdf
 from scenarios import scm_review, compare_scenarios, scenario_takeaways, scenario_procurement_changes
 
 st.set_page_config(page_title='WindGrid | 계통·공급망 분석',page_icon='⚡',layout='wide',initial_sidebar_state='expanded')
+
+def _secret(name: str, default: str = '') -> str:
+    """Streamlit Cloud secrets first, local environment second. Never log secrets."""
+    try:
+        value = st.secrets.get(name)
+        if value is not None:
+            return str(value)
+    except Exception:
+        # Missing Streamlit secrets file also raises StreamlitSecretNotFoundError.
+        pass
+    return os.getenv(name, default)
+
+def _ai_issues(text: str, docs: list[dict], trusted: dict) -> tuple[list[str], list[str], list[str]]:
+    valid, invalid = citation_check(text, docs)
+    issues = check_ai_numbers(text, trusted)
+    if not valid: issues.append('등록된 문서 ID 인용이 없음')
+    if invalid: issues.append('등록되지 않은 문서 ID 인용: ' + ', '.join(invalid))
+    return valid, invalid, issues
+
 BROWSER = sys.platform == 'emscripten'
 if not BROWSER:
     from reporting_v2 import report_pdf_pretty
@@ -67,7 +86,7 @@ with st.sidebar:
         candidate=Inputs(project,cap,op,length,voltage,conn,ssc,cod,c,r,hz,pf,int(circuits),demo)
         try:
             candidate.validate();st.session_state.config=asdict(candidate)
-            st.session_state.llm_result=None;st.session_state.last_run=True
+            st.session_state.llm_result=None;st.session_state.comparison_ai=None;st.session_state.last_run=True
         except ValueError as err:st.error(str(err))
     st.button('기본 예시로 되돌리기',on_click=load_default,use_container_width=True)
     st.caption('변경 후 분석 실행을 눌러 적용하세요. 실제 계통·제조사 데이터는 연결되어 있지 않습니다.')
@@ -82,7 +101,7 @@ fingerprint=state_digest(x,docs)
 if st.session_state.llm_result and st.session_state.llm_result['fingerprint']!=fingerprint:
     st.session_state.llm_result=None
 
-st.markdown('<div class="wg-top"><span class="wg-word">OFFSHORE WIND / GRID TO PROCUREMENT</span><span class="wg-badge">교육용 프로토타입 · v0.3</span></div>',unsafe_allow_html=True)
+st.markdown('<div class="wg-top"><span class="wg-word">OFFSHORE WIND / GRID TO PROCUREMENT</span><span class="wg-badge">교육용 프로토타입 · v0.4</span></div>',unsafe_allow_html=True)
 st.title('해상풍력 계통연계 · 공급망 영향 분석')
 st.caption('전기적 조건을 계산하고, 기자재와 조달 일정에서 확인할 일을 연결합니다.')
 nav=st.radio('화면 이동',['① 프로젝트 입력','② 근거 문서','③ 분석 진행','④ 분석 결과','⑤ AI 보고서','⑥ 시나리오 비교'],index=3,horizontal=True,label_visibility='collapsed',key='nav')
@@ -189,12 +208,12 @@ elif nav.startswith('⑤'):
     st.subheader('05 / 보고서 생성과 근거 확인')
     st.write('API 없이도 계산 결과·가정·검토사항이 담긴 보고서를 저장할 수 있습니다.')
     ai=st.session_state.llm_result
-    md=report_markdown(x,r,docs,ai['text'] if ai else '')
+    md=report_markdown(x,r,docs,ai['text'] if ai and not ai.get('issues') else '')
     col1,col2,col3=st.columns(3)
     col1.download_button('HTML 보고서 저장',report_html(md),'windgrid_report.html','text/html',use_container_width=True)
     col2.download_button('입력·계산 JSON 저장',json.dumps({'inputs':asdict(x),'results':asdict(r),'rules':DEMO_RULES,'source':'교육용 가정'},ensure_ascii=False,indent=2),'windgrid_results.json','application/json',use_container_width=True)
     if not BROWSER:
-        try: col3.download_button('개선된 PDF 저장',report_pdf_pretty(x,r,docs,ai['text'] if ai else '',model=ai['model'] if ai else ''),'windgrid_report.pdf','application/pdf',use_container_width=True)
+        try: col3.download_button('개선된 PDF 저장',report_pdf_pretty(x,r,docs,ai['text'] if ai and not ai.get('issues') else '',model=ai['model'] if ai and not ai.get('issues') else ''),'windgrid_report.pdf','application/pdf',use_container_width=True)
         except (ImportError,RuntimeError) as e:col3.error(f'PDF 생성 불가: {e}')
     else:col3.info('브라우저판: HTML 보고서를 열어 인쇄 → PDF로 저장')
     with st.expander('LLM 연결 (선택) · 공개 자료만 전송',expanded=False):
@@ -202,8 +221,10 @@ elif nav.startswith('⑤'):
         if BROWSER:
             st.info('브라우저 실행판에서는 API 키 입력을 비활성화했습니다. LLM 연동은 ZIP의 Python 서버판에서 설정하세요.')
         else:
-            key=st.text_input('Gemini API 키',type='password',value=os.getenv('GEMINI_API_KEY',''))
-            model=st.text_input('사용 가능한 모델 ID',value=os.getenv('GEMINI_MODEL',''),placeholder='계정에서 사용 가능한 모델 이름')
+            key=_secret('GEMINI_API_KEY')
+            if key: st.success('Gemini API 키가 Streamlit Cloud Secrets에 설정됨')
+            else: st.info('Cloud 관리 화면 → App settings → Secrets에 GEMINI_API_KEY를 등록하세요.')
+            model=st.text_input('Gemini 모델 ID',value=_secret('GEMINI_MODEL','gemini-2.5-flash'),help='계정에서 사용 가능한 모델 ID')
             prompt_query=st.text_input('분석 초점','무효전력 리액터 STATCOM 계통 공급망 납기')
             selected=retrieve(docs,prompt_query,6)
             payload={'inputs':asdict(x),'results':asdict(r),'screening':rows,'notes':'판정규칙은 수업용 가정, 공인기준 아님'}
@@ -215,15 +236,18 @@ elif nav.startswith('⑤'):
                 try:
                     with st.spinner('실제 Gemini API에 요청 중...'):
                         text=call_gemini(key,model,prompt)
-                    valid,invalid=citation_check(text,selected)
-                    st.session_state.llm_result={'text':text,'fingerprint':fingerprint,'model':model,'valid':valid,'invalid':invalid}
+                    valid,invalid,issues=_ai_issues(text,selected,{'inputs':asdict(x),'results':asdict(r)})
+                    st.session_state.llm_result={'text':text,'fingerprint':fingerprint,'model':model,'valid':valid,'invalid':invalid,'issues':issues}
                     st.rerun()
                 except Exception as err:st.error(str(err)[:250])
     if ai:
         st.markdown('#### 실제 LLM 응답 · 전문가 검토 전')
         st.markdown(ai['text'])
         st.caption(f'모델: {ai["model"]} / 존재하는 문서 ID 인용: {len(ai["valid"])} / 미등록 인용: {len(ai["invalid"])}')
-        if ai['invalid'] or not ai['valid']:st.warning('문서 인용을 다시 확인하세요. ID 존재 검사는 내용의 정확성을 보장하지 않습니다.')
+        if ai.get('issues'):
+            st.error('자동 검증에서 확인이 필요한 사항이 발견됨. 이 AI 해석은 PDF에 포함되지 않습니다.')
+            for issue in ai['issues']:st.write('• '+issue)
+        else: st.success('숫자 대조와 문서 ID 형식 검사를 통과함. 문서 내용과 판단 타당성은 직접 검증 필요.')
     else:
         st.markdown('#### 자동 요약 · 규칙 기반')
         st.write(template_summary(x,r))
@@ -260,8 +284,9 @@ else:
         comp_key=state_digest(x,docs)+json.dumps(chosen)
         if comp_ai and comp_ai['fingerprint']!=comp_key:
             comp_ai=None
+            st.session_state.comparison_ai=None
         if not BROWSER:
-            st.download_button('시나리오 비교 PDF 다운로드',report_pdf_pretty(x,r,docs,comp_ai['text'] if comp_ai else '',comparison,model=comp_ai['model'] if comp_ai else ''),
+            st.download_button('시나리오 비교 PDF 다운로드',report_pdf_pretty(x,r,docs,comp_ai['text'] if comp_ai and not comp_ai.get('issues') else '',comparison,model=comp_ai['model'] if comp_ai and not comp_ai.get('issues') else ''),
                 file_name='windgrid_scenario_comparison.pdf',mime='application/pdf',type='primary')
         else:
             st.info('브라우저 실행판에서는 PDF 대신 Streamlit 서버판에서 다운로드하세요.')
@@ -272,8 +297,10 @@ else:
             if BROWSER:
                 st.info('브라우저판에서는 API 호출을 지원하지 않습니다.')
             else:
-                api_key=st.text_input('Gemini API 키 (보고서에 저장되지 않음)',type='password',value=os.getenv('GEMINI_API_KEY',''),key='comp_api_key')
-                model_id=st.text_input('Gemini 모델 ID',value=os.getenv('GEMINI_MODEL',''),placeholder='사용 가능한 모델 ID',key='comp_model')
+                api_key=_secret('GEMINI_API_KEY')
+                if api_key: st.success('Gemini API 키 설정 확인')
+                else: st.info('Streamlit Cloud Secrets에 GEMINI_API_KEY를 설정하세요.')
+                model_id=st.text_input('Gemini 모델 ID',value=_secret('GEMINI_MODEL','gemini-2.5-flash'),key='comp_model')
                 evidence_docs=retrieve(docs,'해저케이블 무효전력 리액터 공급망 계통',6)
                 payload={'baseline':asdict(x),'baseline_results':asdict(r),'comparison':comparison,
                          'scm_review':scm_review(x,r),'caveat':'검토 경계는 수업용 가정. 납기, 가격, 발주량, COD 지연은 미산출.'}
@@ -285,14 +312,17 @@ else:
                     try:
                         with st.spinner('실제 Gemini API 응답 대기 중...'):
                             response=call_gemini(api_key,model_id,prompt)
-                        valid,invalid=citation_check(response,evidence_docs)
-                        st.session_state.comparison_ai={'text':response,'fingerprint':comp_key,'model':model_id,'valid':valid,'invalid':invalid}
+                        valid,invalid,issues=_ai_issues(response,evidence_docs,payload)
+                        st.session_state.comparison_ai={'text':response,'fingerprint':comp_key,'model':model_id,'valid':valid,'invalid':invalid,'issues':issues}
                         st.rerun()
                     except Exception as err:st.error(str(err)[:300])
         if comp_ai:
             st.markdown('#### 실제 LLM 해석 (전문가 검증 전)')
             st.write(comp_ai['text'])
             st.caption(f'인용 ID 확인: {len(comp_ai["valid"])}개 / 미등록 ID: {len(comp_ai["invalid"])}개. ID 일치는 원문 내용 검증을 뜻하지 않습니다.')
-            if comp_ai['invalid'] or not comp_ai['valid']:st.warning('문서 인용을 검증하세요.')
+            if comp_ai.get('issues'):
+                st.error('자동 검증에서 확인 필요: PDF에는 이 AI 해석을 포함하지 않음')
+                for issue in comp_ai['issues']:st.write('• '+issue)
+            else: st.success('숫자 대조 및 문서 ID 형식 검사를 통과함. 원문 내용 검증은 별도 필요.')
 
 st.markdown('<div class="wg-foot">김희진 교수님 스마트그리드 개인 프로젝트 · 공개 자료 기반 가상 단지 · 계산은 코드, 해석은 LLM<br>숫자 검증 / 규칙의 출처 / AI 인용 검증은 서로 다른 작업입니다.</div>',unsafe_allow_html=True)

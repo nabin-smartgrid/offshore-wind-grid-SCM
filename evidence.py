@@ -100,3 +100,38 @@ def citation_check(text: str, selected: list[dict]) -> tuple[list[str],list[str]
     cited=set(re.findall(r'\[((?:DOC|PLAN)-[^\]\n]+)\]',text))
     allowed={c['id'] for c in selected}
     return sorted(cited & allowed),sorted(cited-allowed)
+
+
+def check_ai_numbers(text: str, trusted: dict) -> list[str]:
+    """Conservative screen for Mvar, MW, and SCR numbers in LLM prose.
+
+    This is NOT a technical validation of claims or citations. It checks
+    only explicit numeric statements against deterministic inputs/results.
+    """
+    from math import isclose
+    def collect(obj):
+        if isinstance(obj, dict):
+            for k,v in obj.items():
+                if k in ('qc_total_mvar','qc_per_circuit_mvar','scr','충전 무효전력 (Mvar)','load_loss_mw','부하전류 저항손실 (MW)','capacity_mw','operating_mw') and isinstance(v,(int,float)):
+                    yield k,float(v)
+                yield from collect(v)
+        elif isinstance(obj,list):
+            for v in obj: yield from collect(v)
+    vals=list(collect(trusted))
+    qcs=[v for k,v in vals if k in ('qc_total_mvar','qc_per_circuit_mvar','충전 무효전력 (Mvar)')]
+    mws=[v for k,v in vals if k in ('load_loss_mw','부하전류 저항손실 (MW)','capacity_mw','operating_mw')]
+    scrs=[v for k,v in vals if k=='scr']
+    issues=[]
+    for m in re.finditer(r'(?<![\w.])([\d,]+(?:\.\d+)?)\s*(?:Mvar|MVAr|MVAR)\b',text,re.I):
+        v=float(m.group(1).replace(',',''))
+        if not any(isclose(v,a,rel_tol=.001,abs_tol=.08) for a in qcs):
+            issues.append(f'Mvar 수치 미일치 또는 미확인: {m.group(0)}')
+    for m in re.finditer(r'(?<![\w.])([\d,]+(?:\.\d+)?)\s*MW\b',text,re.I):
+        v=float(m.group(1).replace(',',''))
+        if not any(isclose(v,a,rel_tol=.001,abs_tol=.08) for a in mws):
+            issues.append(f'MW 수치 미일치 또는 미확인: {m.group(0)}')
+    for m in re.finditer(r'\bSCR\s*(?:=|:|는|이|가|약)?\s*([\d]+(?:\.\d+)?)',text,re.I):
+        v=float(m.group(1))
+        if not any(isclose(v,a,rel_tol=.002,abs_tol=.02) for a in scrs):
+            issues.append(f'SCR 수치 미일치: {m.group(0)}')
+    return sorted(set(issues))

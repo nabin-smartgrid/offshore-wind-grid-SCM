@@ -19,3 +19,10 @@
 - 시나리오 비교 PDF 1페이지에 그래프·전체 비교표를 묶고, 2페이지에 SCM/일정 검토사항 배치
 - 길이 변화에 따른 리액터·케이블 검토 수준별 조달 후속 조치를 구체화 (납기/가격/COD 임의 산정 금지)
 - LLM API 실행 여부를 PDF에서 명확히 구분
+
+## v0.4 (2026-10-29)
+- Gemini API key stored in Streamlit Cloud Secrets (never in GitHub).
+- Default Gemini model ID with manual override.
+- Numerical Mvar/SCR consistency check and document-ID check on LLM output.
+- LLM output failing automatic checks is excluded from downloadable PDFs.
+- 5 new unit tests and deployment guide.
